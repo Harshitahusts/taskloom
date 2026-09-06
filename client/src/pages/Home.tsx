@@ -3,9 +3,9 @@ import {
   CalendarDays,
   Check,
   ChevronDown,
+  ChevronRight,
   Clock3,
   ExternalLink,
-  Filter,
   ListChecks,
   Plus,
   Search,
@@ -29,11 +29,21 @@ const statusMeta: Record<TaskStatus, { label: string; className: string }> = {
   later: { label: "Later", className: "status-later" },
 };
 
-const todayInput = () => {
-  const now = new Date();
-  const offset = now.getTimezoneOffset();
-  return new Date(now.getTime() - offset * 60_000).toISOString().slice(0, 10);
-};
+function pad(value: number) {
+  return String(value).padStart(2, "0");
+}
+
+function dateKey(date = new Date()) {
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+function shiftDate(key: string, days: number) {
+  const date = new Date(`${key}T12:00:00`);
+  date.setDate(date.getDate() + days);
+  return dateKey(date);
+}
+
+const todayInput = () => dateKey();
 
 const timeInput = () => {
   const now = new Date();
@@ -49,10 +59,23 @@ const starterTasks: Task[] = [
 ];
 
 function normalizeTasks(raw: Task[]): Task[] {
-  return raw.map((task, index) => ({
-    ...task,
-    scheduledAt: task.scheduledAt || `${todayInput()}T${["10:00", "14:30", "09:00", "17:00"][index % 4]}`,
-  }));
+  const today = todayInput();
+  const tomorrow = shiftDate(today, 1);
+  let movedCount = 0;
+  const normalized = raw.map((task, index) => {
+    const fallbackTime = ["10:00", "14:30", "09:00", "17:00"][index % 4];
+    const scheduledAt = task.scheduledAt || `${today}T${fallbackTime}`;
+    const scheduledDate = scheduledAt.slice(0, 10);
+    if (task.status !== "done" && scheduledDate < today) {
+      movedCount += 1;
+      return { ...task, scheduledAt: `${tomorrow}T${scheduledAt.slice(11, 16) || fallbackTime}` };
+    }
+    return { ...task, scheduledAt };
+  });
+  if (movedCount && typeof window !== "undefined") {
+    window.setTimeout(() => toast(`${movedCount} unfinished ${movedCount === 1 ? "task was" : "tasks were"} moved to tomorrow`), 0);
+  }
+  return normalized;
 }
 
 function getStoredTasks(): Task[] {
@@ -66,6 +89,13 @@ function getStoredTasks(): Task[] {
 
 function formatDay(value: string) {
   return new Intl.DateTimeFormat("en-US", { weekday: "short", month: "short", day: "numeric" }).format(new Date(`${value}T12:00:00`));
+}
+
+function formatWindowLabel(value: string) {
+  const today = todayInput();
+  if (value === today) return "Today";
+  if (value === shiftDate(today, 1)) return "Tomorrow";
+  return formatDay(value);
 }
 
 function formatTime(value: string) {
@@ -93,6 +123,13 @@ export default function Home() {
     window.localStorage.setItem("taskloom-tasks", JSON.stringify(tasks));
   }, [tasks]);
 
+  useEffect(() => {
+    const rolloverTimer = window.setInterval(() => {
+      setTasks((current) => normalizeTasks(current));
+    }, 60_000);
+    return () => window.clearInterval(rolloverTimer);
+  }, []);
+
   const counts = useMemo(() => ({
     all: tasks.length,
     todo: tasks.filter((task) => task.status === "todo").length,
@@ -106,6 +143,15 @@ export default function Home() {
       .filter((task) => (filter === "all" || task.status === filter) && (!query || task.title.toLowerCase().includes(query)))
       .sort((a, b) => a.scheduledAt.localeCompare(b.scheduledAt));
   }, [filter, search, tasks]);
+
+  const taskWindows = useMemo(() => {
+    const grouped = new Map<string, Task[]>();
+    visibleTasks.forEach((task) => {
+      const key = task.scheduledAt.slice(0, 10);
+      grouped.set(key, [...(grouped.get(key) || []), task]);
+    });
+    return Array.from(grouped.entries());
+  }, [visibleTasks]);
 
   const addTask = () => {
     const trimmed = title.trim();
@@ -133,8 +179,6 @@ export default function Home() {
     setTasks((current) => current.filter((task) => task.id !== id));
     toast("Task removed", { action: { label: "Undo", onClick: () => setTasks((current) => [removed, ...current]) } });
   };
-
-  const openCalendar = () => window.open("https://calendar.google.com/calendar/u/0/r", "_blank", "noopener,noreferrer");
 
   return (
     <div className="app-shell">
@@ -174,17 +218,20 @@ export default function Home() {
             <label className="search-box"><Search size={15} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search" aria-label="Search tasks" />{search && <button type="button" onClick={() => setSearch("")} aria-label="Clear search"><X size={14} /></button>}</label>
           </div>
           <div className="task-list" aria-live="polite">
-            {visibleTasks.length ? visibleTasks.map((task) => <article className={`task-row ${task.status === "done" ? "is-done" : ""}`} key={task.id}>
-              <button className={`task-checkbox ${task.status === "done" ? "checked" : ""}`} type="button" onClick={() => toggleTask(task.id)} aria-label={`${task.status === "done" ? "Mark not done" : "Mark done"}: ${task.title}`}>{task.status === "done" && <Check size={14} />}</button>
-              <button className="task-main" type="button" onClick={() => cycleStatus(task.id)} title="Click to change status"><strong>{task.title}</strong><span><CalendarDays size={13} /> {formatDay(task.scheduledAt.slice(0, 10))}<i /> <Clock3 size={13} /> {formatTime(task.scheduledAt)}</span></button>
-              <button className={`status-pill ${statusMeta[task.status].className}`} type="button" onClick={() => cycleStatus(task.id)} aria-label={`Change status, currently ${statusMeta[task.status].label}`}><span className="status-dot" />{statusMeta[task.status].label}</button>
-              <a className="calendar-task" href={calendarUrl(task)} target="_blank" rel="noreferrer" aria-label={`Add ${task.title} to Google Calendar`} title="Add to Google Calendar"><CalendarDays size={15} /></a>
-              <button className="delete-button" type="button" onClick={() => removeTask(task.id)} aria-label={`Delete ${task.title}`}><Trash2 size={15} /></button>
-            </article>) : <div className="empty-state"><strong>No tasks here</strong><span>Add one above or choose another filter.</span></div>}
+            {taskWindows.length ? taskWindows.map(([windowDate, windowTasks]: [string, Task[]]) => <section className="date-window" key={windowDate}>
+              <div className="date-window-header"><div><span className="date-window-title">{formatWindowLabel(windowDate)}</span><span className="date-window-date">{formatDay(windowDate)}</span></div><span className="window-count">{windowTasks.length}</span></div>
+              {windowTasks.map((task: Task) => <article className={`task-row ${task.status === "done" ? "is-done" : ""}`} key={task.id}>
+                <button className={`task-checkbox ${task.status === "done" ? "checked" : ""}`} type="button" onClick={() => toggleTask(task.id)} aria-label={`${task.status === "done" ? "Mark not done" : "Mark done"}: ${task.title}`}>{task.status === "done" && <Check size={14} />}</button>
+                <button className="task-main" type="button" onClick={() => cycleStatus(task.id)} title="Click to change status"><strong>{task.title}</strong><span><CalendarDays size={13} /> {formatDay(task.scheduledAt.slice(0, 10))}<i /> <Clock3 size={13} /> {formatTime(task.scheduledAt)}</span></button>
+                <button className={`status-pill ${statusMeta[task.status].className}`} type="button" onClick={() => cycleStatus(task.id)} aria-label={`Change status, currently ${statusMeta[task.status].label}`}><span className="status-dot" />{statusMeta[task.status].label}</button>
+                <a className="calendar-task" href={calendarUrl(task)} target="_blank" rel="noreferrer" aria-label={`Add ${task.title} to Google Calendar`} title="Add to Google Calendar"><CalendarDays size={15} /></a>
+                <button className="delete-button" type="button" onClick={() => removeTask(task.id)} aria-label={`Delete ${task.title}`}><Trash2 size={15} /></button>
+              </article>)}
+            </section>) : <div className="empty-state"><strong>No tasks here</strong><span>Add one above or choose another filter.</span></div>}
           </div>
         </section>
 
-        <footer className="footer"><span>{counts.all} tasks · saved in this browser</span><button type="button" onClick={openCalendar}>Open Google Calendar <ExternalLink size={12} /></button></footer>
+        <footer className="footer"><span>{counts.all} tasks · unfinished past tasks move to tomorrow</span><a href="https://calendar.google.com/calendar/u/0/r" target="_blank" rel="noreferrer">Open Google Calendar <ExternalLink size={12} /></a></footer>
       </main>
     </div>
   );
