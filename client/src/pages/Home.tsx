@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import {
+  Bot,
   CalendarDays,
   Check,
   ChevronDown,
@@ -7,8 +8,10 @@ import {
   Clock3,
   ExternalLink,
   ListChecks,
+  Loader2,
   Plus,
   Search,
+  Send,
   Trash2,
   X,
 } from "lucide-react";
@@ -21,6 +24,12 @@ type Task = {
   title: string;
   status: TaskStatus;
   scheduledAt: string;
+};
+
+type ExtractedTask = {
+  title: string;
+  date: string;
+  time: string;
 };
 
 const statusMeta: Record<TaskStatus, { label: string; className: string }> = {
@@ -118,6 +127,9 @@ export default function Home() {
   const [time, setTime] = useState(timeInput);
   const [newStatus, setNewStatus] = useState<TaskStatus>("todo");
   const [showComposer, setShowComposer] = useState(true);
+  const [isRoutineOpen, setIsRoutineOpen] = useState(false);
+  const [routine, setRoutine] = useState("");
+  const [isParsingRoutine, setIsParsingRoutine] = useState(false);
 
   useEffect(() => {
     window.localStorage.setItem("taskloom-tasks", JSON.stringify(tasks));
@@ -180,11 +192,49 @@ export default function Home() {
     toast("Task removed", { action: { label: "Undo", onClick: () => setTasks((current) => [removed, ...current]) } });
   };
 
+  const extractRoutine = async () => {
+    if (!routine.trim()) {
+      toast.error("Paste your routine first");
+      return;
+    }
+    setIsParsingRoutine(true);
+    try {
+      const response = await fetch("/api/extract-routine", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ routine, baseDate: todayInput() }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "Could not read that routine");
+      const extracted = payload.tasks as ExtractedTask[];
+      if (!extracted.length) throw new Error("No actionable tasks found in that routine");
+      setTasks((current) => [
+        ...extracted.map((task, index) => ({
+          id: `routine-${Date.now()}-${index}`,
+          title: task.title,
+          status: "todo" as TaskStatus,
+          scheduledAt: `${task.date}T${task.time}`,
+        })),
+        ...current,
+      ]);
+      setRoutine("");
+      setIsRoutineOpen(false);
+      toast.success(`${extracted.length} tasks added as Not done`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not read that routine");
+    } finally {
+      setIsParsingRoutine(false);
+    }
+  };
+
   return (
     <div className="app-shell">
       <header className="topbar">
         <a className="brand" href="/" aria-label="Taskloom home"><span className="brand-mark"><ListChecks size={17} /></span><span>taskloom</span></a>
-        <a className="calendar-link" href="https://calendar.google.com/calendar/u/0/r" target="_blank" rel="noreferrer"><CalendarDays size={15} /> Google Calendar <ExternalLink size={12} /></a>
+        <div className="header-actions">
+          <button className="routine-link" type="button" onClick={() => setIsRoutineOpen(true)}><Bot size={15} /> Plan my day</button>
+          <a className="calendar-link" href="https://calendar.google.com/calendar/u/0/r" target="_blank" rel="noreferrer"><CalendarDays size={15} /> Google Calendar <ExternalLink size={12} /></a>
+        </div>
       </header>
 
       <main className="workspace">
@@ -230,6 +280,15 @@ export default function Home() {
             </section>) : <div className="empty-state"><strong>No tasks here</strong><span>Add one above or choose another filter.</span></div>}
           </div>
         </section>
+
+        {isRoutineOpen && <div className="routine-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setIsRoutineOpen(false); }}>
+          <section className="routine-modal panel-card" role="dialog" aria-modal="true" aria-labelledby="routine-title">
+            <div className="routine-modal-head"><div><span className="today-label">Routine assistant</span><h2 id="routine-title">Turn your day into tasks</h2></div><button className="modal-close" type="button" onClick={() => setIsRoutineOpen(false)} aria-label="Close routine assistant">×</button></div>
+            <p className="routine-help">Share a full-day routine in plain language. I’ll find the actionable items, dates, and times, then add them as <strong>Not done</strong>.</p>
+            <textarea className="routine-input" value={routine} onChange={(event) => setRoutine(event.target.value)} placeholder={'Example:\n7:30 wake up and exercise\n9:00 finish the client proposal\nAfter lunch, call the dentist\n6 PM plan tomorrow'} aria-label="Describe your full-day routine" />
+            <div className="routine-modal-foot"><span><Bot size={14} /> Powered by your Vercel server function</span><button className="add-button" type="button" onClick={extractRoutine} disabled={isParsingRoutine}>{isParsingRoutine ? <><Loader2 className="spin" size={15} /> Reading routine</> : <><Send size={15} /> Add tasks</>}</button></div>
+          </section>
+        </div>}
 
         <footer className="footer"><span>{counts.all} tasks · unfinished past tasks move to tomorrow</span><a href="https://calendar.google.com/calendar/u/0/r" target="_blank" rel="noreferrer">Open Google Calendar <ExternalLink size={12} /></a></footer>
       </main>
