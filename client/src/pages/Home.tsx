@@ -8,6 +8,7 @@ import {
   Clock3,
   ExternalLink,
   ListChecks,
+  MessageCircle,
   Plus,
   Search,
   Send,
@@ -29,6 +30,12 @@ type ExtractedTask = {
   title: string;
   date: string;
   time: string;
+};
+
+type ChatMessage = {
+  id: number;
+  role: "user" | "assistant";
+  text: string;
 };
 
 const fallbackTimes = ["09:00", "11:00", "13:00", "15:00", "17:00", "19:00"];
@@ -170,6 +177,10 @@ function calendarUrl(task: Task) {
   return `https://calendar.google.com/calendar/u/0/r/eventedit?text=${encodeURIComponent(task.title)}&dates=${stamp(start)}/${stamp(end)}&details=${encodeURIComponent(`Taskloom task · ${statusMeta[task.status].label}`)}`;
 }
 
+function initialChatMessage(): ChatMessage {
+  return { id: 1, role: "assistant", text: "Hi, I’m Chatloom. Ask me about your tasks, what to do next, or say “help” to see what I can do." };
+}
+
 export default function Home() {
   const [tasks, setTasks] = useState<Task[]>(getStoredTasks);
   const [filter, setFilter] = useState<"all" | TaskStatus>("all");
@@ -181,6 +192,9 @@ export default function Home() {
   const [showComposer, setShowComposer] = useState(true);
   const [isRoutineOpen, setIsRoutineOpen] = useState(false);
   const [routine, setRoutine] = useState("");
+  const [isChatOpen, setIsChatOpen] = useState(false);
+  const [chatInput, setChatInput] = useState("");
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([initialChatMessage()]);
 
   useEffect(() => {
     window.localStorage.setItem("taskloom-tasks", JSON.stringify(tasks));
@@ -267,12 +281,37 @@ export default function Home() {
     toast.success(`${extracted.length} tasks added as Not done`);
   };
 
+  const sendChatMessage = () => {
+    const text = chatInput.trim();
+    if (!text) return;
+    const lower = text.toLowerCase();
+    let reply = "I can help with your Taskloom list. Try asking how many tasks you have, what to do next, or say help.";
+    if (/(^|\s)(hi|hello|hey)(\s|$)/.test(lower)) {
+      reply = "Hello. I’m ready to help you stay on top of your day.";
+    } else if (lower.includes("help") || lower.includes("what can you do")) {
+      reply = "Try: “How many tasks are not done?”, “What should I do next?”, “Show today’s tasks”, or “Give me a focus tip.”";
+    } else if (lower.includes("focus") || lower.includes("tip") || lower.includes("motivat")) {
+      reply = "Pick one small task, give it 20 focused minutes, and let the green checkbox be your only next goal.";
+    } else if (lower.includes("how many") || lower.includes("count") || lower.includes("status")) {
+      reply = `You have ${counts.all} tasks: ${counts.todo} not done, ${counts.later} later, and ${counts.done} done.`;
+    } else if (lower.includes("next") || lower.includes("what should i do")) {
+      const next = tasks.filter((task) => task.status !== "done").sort((a, b) => a.scheduledAt.localeCompare(b.scheduledAt))[0];
+      reply = next ? `Your next open task is “${next.title}” at ${formatTime(next.scheduledAt)}.` : "You’re all clear. Nice work.";
+    } else if (lower.includes("today") || lower.includes("show tasks")) {
+      const todayTasks = tasks.filter((task) => task.scheduledAt.slice(0, 10) === todayInput());
+      reply = todayTasks.length ? `Today: ${todayTasks.map((task) => `${task.title} (${statusMeta[task.status].label})`).join(" · ")}` : "You have no tasks scheduled today.";
+    }
+    setChatMessages((current) => [...current, { id: Date.now(), role: "user", text }, { id: Date.now() + 1, role: "assistant", text: reply }]);
+    setChatInput("");
+  };
+
   return (
     <div className="app-shell">
       <header className="topbar">
         <a className="brand" href="/" aria-label="Taskloom home"><span className="brand-mark"><ListChecks size={17} /></span><span>taskloom</span></a>
         <div className="header-actions">
           <button className="routine-link" type="button" onClick={() => setIsRoutineOpen(true)}><Bot size={15} /> Plan my day</button>
+          <button className="chatloom-link" type="button" onClick={() => setIsChatOpen((open) => !open)}><MessageCircle size={15} /> Chatloom</button>
           <a className="calendar-link" href="https://calendar.google.com/calendar/u/0/r" target="_blank" rel="noreferrer"><CalendarDays size={15} /> Google Calendar <ExternalLink size={12} /></a>
         </div>
       </header>
@@ -329,6 +368,14 @@ export default function Home() {
             <div className="routine-modal-foot"><span><Bot size={14} /> Smart local planner · no API key</span><button className="add-button" type="button" onClick={extractRoutine}><Send size={15} /> Add tasks</button></div>
           </section>
         </div>}
+
+        {isChatOpen && <section className="chatloom-panel" aria-label="Chatloom assistant">
+          <div className="chatloom-head"><div><span className="chatloom-avatar"><MessageCircle size={15} /></span><div><strong>Chatloom</strong><span>Taskloom’s local assistant</span></div></div><button type="button" onClick={() => setIsChatOpen(false)} aria-label="Close Chatloom">×</button></div>
+          <div className="chatloom-messages" aria-live="polite">
+            {chatMessages.map((message) => <div className={`chat-bubble ${message.role}`} key={message.id}>{message.text}</div>)}
+          </div>
+          <form className="chatloom-form" onSubmit={(event) => { event.preventDefault(); sendChatMessage(); }}><input value={chatInput} onChange={(event) => setChatInput(event.target.value)} placeholder="Ask Chatloom..." aria-label="Message Chatloom" /><button type="submit" aria-label="Send message"><Send size={15} /></button></form>
+        </section>}
 
         <footer className="footer"><span>{counts.all} tasks · unfinished past tasks move to tomorrow</span><a href="https://calendar.google.com/calendar/u/0/r" target="_blank" rel="noreferrer">Open Google Calendar <ExternalLink size={12} /></a></footer>
       </main>
