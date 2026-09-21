@@ -15,6 +15,7 @@ A simple personal task list with required date and time, clear status colors, gr
 - Save tasks locally in the current browser.
 - Responsive greyish dark theme for desktop and mobile.
 - Use the **Plan my day** assistant to turn a full-day routine into Not done tasks locally.
+- Use **Chatloom**, a popup local assistant for quick task questions and focus help.
 
 ## Run locally
 
@@ -44,6 +45,10 @@ Tasks are stored in browser local storage, so each browser/device has its own ta
 ### Routine assistant
 
 The **Plan my day** assistant is a lightweight local planner. Add one routine item per line, and it detects common times such as `8 AM`, time-of-day phrases such as `after lunch`, and relative dates such as `tomorrow`. It imports every item as **Not done** without sending data to an external AI service.
+
+### Chatloom
+
+Chatloom is a small no-API chat library built into the app. It can answer basic questions about the current task list, such as task counts, today’s tasks, the next open task, focus tips, and available commands. Messages stay in the browser and are not sent to an external service.
 
 ## Google Calendar
 
