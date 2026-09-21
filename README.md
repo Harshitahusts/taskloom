@@ -14,7 +14,7 @@ A simple personal task list with required date and time, clear status colors, gr
 - Add individual tasks to Google Calendar with one click.
 - Save tasks locally in the current browser.
 - Responsive greyish dark theme for desktop and mobile.
-- Use the secure **Plan my day** assistant to turn a full-day routine into Not done tasks.
+- Use the **Plan my day** assistant to turn a full-day routine into Not done tasks locally.
 
 ## Run locally
 
@@ -39,11 +39,11 @@ This repository is configured for Vercel. Import the repository in Vercel and us
 - **Output directory:** `dist/public`
 - **Install command:** `pnpm install --frozen-lockfile`
 
-Tasks are stored in browser local storage, so each browser/device has its own task list. The core task list works without an environment variable.
+Tasks are stored in browser local storage, so each browser/device has its own task list. The app works without environment variables or API keys.
 
-### Routine assistant setup
+### Routine assistant
 
-To enable the routine assistant, add `OPENAI_API_KEY` as a **server-only** environment variable in Vercel for Preview and Production. Never add the key to `.env` files committed to GitHub or to client-side code. The assistant uses the Vercel function at `/api/extract-routine` and imports every extracted item as **Not done**.
+The **Plan my day** assistant is a lightweight local planner. Add one routine item per line, and it detects common times such as `8 AM`, time-of-day phrases such as `after lunch`, and relative dates such as `tomorrow`. It imports every item as **Not done** without sending data to an external AI service.
 
 ## Google Calendar
 
