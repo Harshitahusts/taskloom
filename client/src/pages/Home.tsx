@@ -8,7 +8,6 @@ import {
   Clock3,
   ExternalLink,
   ListChecks,
-  Loader2,
   Plus,
   Search,
   Send,
@@ -31,6 +30,59 @@ type ExtractedTask = {
   date: string;
   time: string;
 };
+
+const fallbackTimes = ["09:00", "11:00", "13:00", "15:00", "17:00", "19:00"];
+
+function parseRoutineTime(text: string, index: number) {
+  const meridiemMatch = text.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/i);
+  const plainMatch = text.match(/\b([01]?\d|2[0-3]):([0-5]\d)\b/);
+  const match = meridiemMatch || plainMatch;
+  if (match) {
+    let hour = Number(match[1]);
+    const minute = match[2] || "00";
+    const meridiem = meridiemMatch ? match[3]?.toLowerCase() : undefined;
+    if (meridiem === "pm" && hour < 12) hour += 12;
+    if (meridiem === "am" && hour === 12) hour = 0;
+    if (hour >= 0 && hour <= 23 && Number(minute) <= 59) return `${pad(hour)}:${minute}`;
+  }
+  const lower = text.toLowerCase();
+  if (lower.includes("breakfast")) return "08:00";
+  if (lower.includes("morning")) return "09:00";
+  if (lower.includes("lunch") || lower.includes("afternoon")) return "13:00";
+  if (lower.includes("evening")) return "18:00";
+  if (lower.includes("dinner")) return "19:00";
+  if (lower.includes("night")) return "21:00";
+  return fallbackTimes[index % fallbackTimes.length];
+}
+
+function parseRoutineDate(text: string, baseDate: string) {
+  const lower = text.toLowerCase();
+  if (lower.includes("day after tomorrow")) return shiftDate(baseDate, 2);
+  if (lower.includes("tomorrow")) return shiftDate(baseDate, 1);
+  return baseDate;
+}
+
+function parseRoutine(routineText: string, baseDate: string): ExtractedTask[] {
+  return routineText
+    .split(/[\n;]+/)
+    .map((line) => line.replace(/^\s*(?:[-*•\d.)]+\s*)/, "").trim())
+    .filter(Boolean)
+    .map((line, index) => {
+      const time = parseRoutineTime(line, index);
+      const date = parseRoutineDate(line, baseDate);
+      const title = line
+        .replace(/\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b/gi, "")
+        .replace(/\b([01]?\d|2[0-3]):([0-5]\d)\b/g, "")
+        .replace(/\b(?:day after tomorrow|today|tomorrow)\b/gi, "")
+        .replace(/^(?:at|around|by|then|after that)\s+/i, "")
+        .replace(/\s{2,}/g, " ")
+        .replace(/^[,:-]+|[,:-]+$/g, "")
+        .trim();
+      return { title: title || line, date, time };
+    })
+    .filter((task) => task.title.length > 1)
+    .slice(0, 50);
+}
 
 const statusMeta: Record<TaskStatus, { label: string; className: string }> = {
   todo: { label: "Not done", className: "status-todo" },
@@ -129,7 +181,6 @@ export default function Home() {
   const [showComposer, setShowComposer] = useState(true);
   const [isRoutineOpen, setIsRoutineOpen] = useState(false);
   const [routine, setRoutine] = useState("");
-  const [isParsingRoutine, setIsParsingRoutine] = useState(false);
 
   useEffect(() => {
     window.localStorage.setItem("taskloom-tasks", JSON.stringify(tasks));
@@ -192,39 +243,28 @@ export default function Home() {
     toast("Task removed", { action: { label: "Undo", onClick: () => setTasks((current) => [removed, ...current]) } });
   };
 
-  const extractRoutine = async () => {
+  const extractRoutine = () => {
     if (!routine.trim()) {
       toast.error("Paste your routine first");
       return;
     }
-    setIsParsingRoutine(true);
-    try {
-      const response = await fetch("/api/extract-routine", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ routine, baseDate: todayInput() }),
-      });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error || "Could not read that routine");
-      const extracted = payload.tasks as ExtractedTask[];
-      if (!extracted.length) throw new Error("No actionable tasks found in that routine");
-      setTasks((current) => [
-        ...extracted.map((task, index) => ({
-          id: `routine-${Date.now()}-${index}`,
-          title: task.title,
-          status: "todo" as TaskStatus,
-          scheduledAt: `${task.date}T${task.time}`,
-        })),
-        ...current,
-      ]);
-      setRoutine("");
-      setIsRoutineOpen(false);
-      toast.success(`${extracted.length} tasks added as Not done`);
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not read that routine");
-    } finally {
-      setIsParsingRoutine(false);
+    const extracted = parseRoutine(routine, todayInput());
+    if (!extracted.length) {
+      toast.error("Add one routine item per line");
+      return;
     }
+    setTasks((current) => [
+      ...extracted.map((task, index) => ({
+        id: `routine-${Date.now()}-${index}`,
+        title: task.title,
+        status: "todo" as TaskStatus,
+        scheduledAt: `${task.date}T${task.time}`,
+      })),
+      ...current,
+    ]);
+    setRoutine("");
+    setIsRoutineOpen(false);
+    toast.success(`${extracted.length} tasks added as Not done`);
   };
 
   return (
@@ -284,9 +324,9 @@ export default function Home() {
         {isRoutineOpen && <div className="routine-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setIsRoutineOpen(false); }}>
           <section className="routine-modal panel-card" role="dialog" aria-modal="true" aria-labelledby="routine-title">
             <div className="routine-modal-head"><div><span className="today-label">Routine assistant</span><h2 id="routine-title">Turn your day into tasks</h2></div><button className="modal-close" type="button" onClick={() => setIsRoutineOpen(false)} aria-label="Close routine assistant">×</button></div>
-            <p className="routine-help">Share a full-day routine in plain language. I’ll find the actionable items, dates, and times, then add them as <strong>Not done</strong>.</p>
+            <p className="routine-help">Share one routine item per line. Taskloom finds times and words like <strong>tomorrow</strong>, then adds everything as <strong>Not done</strong>.</p>
             <textarea className="routine-input" value={routine} onChange={(event) => setRoutine(event.target.value)} placeholder={'Example:\n7:30 wake up and exercise\n9:00 finish the client proposal\nAfter lunch, call the dentist\n6 PM plan tomorrow'} aria-label="Describe your full-day routine" />
-            <div className="routine-modal-foot"><span><Bot size={14} /> Powered by your Vercel server function</span><button className="add-button" type="button" onClick={extractRoutine} disabled={isParsingRoutine}>{isParsingRoutine ? <><Loader2 className="spin" size={15} /> Reading routine</> : <><Send size={15} /> Add tasks</>}</button></div>
+            <div className="routine-modal-foot"><span><Bot size={14} /> Smart local planner · no API key</span><button className="add-button" type="button" onClick={extractRoutine}><Send size={15} /> Add tasks</button></div>
           </section>
         </div>}
 
