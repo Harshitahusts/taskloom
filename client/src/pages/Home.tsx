@@ -1,384 +1,1004 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import * as Dialog from "@radix-ui/react-dialog";
+import { Toaster, toast } from "sonner";
 import {
-  Bot,
+  ArrowRight,
+  CalendarClock,
   CalendarDays,
-  Check,
+  CheckCircle2,
   ChevronDown,
-  ChevronRight,
-  Clock3,
+  Command as CommandIcon,
   ExternalLink,
-  ListChecks,
-  MessageCircle,
+  Inbox,
+  Keyboard,
+  ListTodo,
+  Lock,
+  MessagesSquare,
+  Moon,
   Plus,
+  RotateCcw,
   Search,
-  Send,
+  Sparkles,
+  Sun,
+  Target,
   Trash2,
+  Undo2,
   X,
 } from "lucide-react";
-import { toast } from "sonner";
+import { useTaskStore } from "@/hooks/useTaskStore";
+import {
+  byTime,
+  currentTask,
+  formatLongDay,
+  formatTime,
+  GOOGLE_CALENDAR_URL,
+  greeting,
+  groupByDate,
+  matchesQuery,
+  newId,
+  nextQuarterHour,
+  relativeDayLabel,
+  shiftDate,
+  taskDate,
+  taskTime,
+  upcomingSections,
+  type DateGroup,
+  type Task,
+  type TaskStatus,
+  type View,
+} from "@/lib/tasks";
+import { isTypingTarget, mod } from "@/lib/platform";
+import type { ChatAction } from "@/lib/chatloom";
+import type { ExtractedTask } from "@/lib/routine";
+import { TaskRow, type TaskActions } from "@/components/taskloom/TaskRow";
+import { Composer, type ComposerHandle } from "@/components/taskloom/Composer";
+import { PlanMyDay } from "@/components/taskloom/PlanMyDay";
+import { Chatloom } from "@/components/taskloom/Chatloom";
+import { CommandPalette, type PaletteCommand } from "@/components/taskloom/CommandPalette";
+import { FocusMode } from "@/components/taskloom/FocusMode";
+import { ShortcutsDialog } from "@/components/taskloom/ShortcutsDialog";
 
-type TaskStatus = "todo" | "done" | "later";
+type Theme = "dark" | "light";
 
-type Task = {
-  id: string;
-  title: string;
-  status: TaskStatus;
-  scheduledAt: string;
-};
-
-type ExtractedTask = {
-  title: string;
-  date: string;
-  time: string;
-};
-
-type ChatMessage = {
-  id: number;
-  role: "user" | "assistant";
-  text: string;
-};
-
-const fallbackTimes = ["09:00", "11:00", "13:00", "15:00", "17:00", "19:00"];
-
-function parseRoutineTime(text: string, index: number) {
-  const meridiemMatch = text.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/i);
-  const plainMatch = text.match(/\b([01]?\d|2[0-3]):([0-5]\d)\b/);
-  const match = meridiemMatch || plainMatch;
-  if (match) {
-    let hour = Number(match[1]);
-    const minute = match[2] || "00";
-    const meridiem = meridiemMatch ? match[3]?.toLowerCase() : undefined;
-    if (meridiem === "pm" && hour < 12) hour += 12;
-    if (meridiem === "am" && hour === 12) hour = 0;
-    if (hour >= 0 && hour <= 23 && Number(minute) <= 59) return `${pad(hour)}:${minute}`;
-  }
-  const lower = text.toLowerCase();
-  if (lower.includes("breakfast")) return "08:00";
-  if (lower.includes("morning")) return "09:00";
-  if (lower.includes("lunch") || lower.includes("afternoon")) return "13:00";
-  if (lower.includes("evening")) return "18:00";
-  if (lower.includes("dinner")) return "19:00";
-  if (lower.includes("night")) return "21:00";
-  return fallbackTimes[index % fallbackTimes.length];
-}
-
-function parseRoutineDate(text: string, baseDate: string) {
-  const lower = text.toLowerCase();
-  if (lower.includes("day after tomorrow")) return shiftDate(baseDate, 2);
-  if (lower.includes("tomorrow")) return shiftDate(baseDate, 1);
-  return baseDate;
-}
-
-function parseRoutine(routineText: string, baseDate: string): ExtractedTask[] {
-  return routineText
-    .split(/[\n;]+/)
-    .map((line) => line.replace(/^\s*(?:[-*•\d.)]+\s*)/, "").trim())
-    .filter(Boolean)
-    .map((line, index) => {
-      const time = parseRoutineTime(line, index);
-      const date = parseRoutineDate(line, baseDate);
-      const title = line
-        .replace(/\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b/gi, "")
-        .replace(/\b([01]?\d|2[0-3]):([0-5]\d)\b/g, "")
-        .replace(/\b(?:day after tomorrow|today|tomorrow)\b/gi, "")
-        .replace(/^(?:at|around|by|then|after that)\s+/i, "")
-        .replace(/\s{2,}/g, " ")
-        .replace(/^[,:-]+|[,:-]+$/g, "")
-        .trim();
-      return { title: title || line, date, time };
-    })
-    .filter((task) => task.title.length > 1)
-    .slice(0, 50);
-}
-
-const statusMeta: Record<TaskStatus, { label: string; className: string }> = {
-  todo: { label: "Not done", className: "status-todo" },
-  done: { label: "Done", className: "status-done" },
-  later: { label: "Later", className: "status-later" },
-};
-
-function pad(value: number) {
-  return String(value).padStart(2, "0");
-}
-
-function dateKey(date = new Date()) {
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
-}
-
-function shiftDate(key: string, days: number) {
-  const date = new Date(`${key}T12:00:00`);
-  date.setDate(date.getDate() + days);
-  return dateKey(date);
-}
-
-const todayInput = () => dateKey();
-
-const timeInput = () => {
-  const now = new Date();
-  now.setMinutes(Math.ceil(now.getMinutes() / 15) * 15, 0, 0);
-  return now.toTimeString().slice(0, 5);
-};
-
-const starterTasks: Task[] = [
-  { id: "starter-1", title: "Ship the first version of the landing page", status: "todo", scheduledAt: `${todayInput()}T10:00` },
-  { id: "starter-2", title: "Review saved tasks after lunch", status: "later", scheduledAt: `${todayInput()}T14:30` },
-  { id: "starter-3", title: "Send the weekly update", status: "done", scheduledAt: `${todayInput()}T09:00` },
-  { id: "starter-4", title: "Sketch next week’s focus", status: "todo", scheduledAt: `${todayInput()}T17:00` },
+const views: { id: View; label: string; short: string; icon: ReactNode }[] = [
+  { id: "today", label: "Today", short: "Today", icon: <Target size={16} /> },
+  { id: "upcoming", label: "Upcoming", short: "Upcoming", icon: <CalendarClock size={16} /> },
+  { id: "completed", label: "Completed", short: "Done", icon: <CheckCircle2 size={16} /> },
+  { id: "all", label: "All tasks", short: "All", icon: <ListTodo size={16} /> },
 ];
 
-function normalizeTasks(raw: Task[]): Task[] {
-  const today = todayInput();
-  const tomorrow = shiftDate(today, 1);
-  let movedCount = 0;
-  const normalized = raw.map((task, index) => {
-    const fallbackTime = ["10:00", "14:30", "09:00", "17:00"][index % 4];
-    const scheduledAt = task.scheduledAt || `${today}T${fallbackTime}`;
-    const scheduledDate = scheduledAt.slice(0, 10);
-    if (task.status !== "done" && scheduledDate < today) {
-      movedCount += 1;
-      return { ...task, scheduledAt: `${tomorrow}T${scheduledAt.slice(11, 16) || fallbackTime}` };
-    }
-    return { ...task, scheduledAt };
-  });
-  if (movedCount && typeof window !== "undefined") {
-    window.setTimeout(() => toast(`${movedCount} unfinished ${movedCount === 1 ? "task was" : "tasks were"} moved to tomorrow`), 0);
-  }
-  return normalized;
-}
-
-function getStoredTasks(): Task[] {
+function readPref<T extends string>(key: string, fallback: T, allowed: readonly T[]): T {
   try {
-    const raw = window.localStorage.getItem("taskloom-tasks");
-    return raw ? normalizeTasks(JSON.parse(raw) as Task[]) : starterTasks;
+    const value = window.localStorage.getItem(key) as T | null;
+    return value && allowed.includes(value) ? value : fallback;
   } catch {
-    return starterTasks;
+    return fallback;
   }
 }
 
-function formatDay(value: string) {
-  return new Intl.DateTimeFormat("en-US", { weekday: "short", month: "short", day: "numeric" }).format(new Date(`${value}T12:00:00`));
+function writePref(key: string, value: string) {
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    /* ignore */
+  }
 }
 
-function formatWindowLabel(value: string) {
-  const today = todayInput();
-  if (value === today) return "Today";
-  if (value === shiftDate(today, 1)) return "Tomorrow";
-  return formatDay(value);
+function useMediaQuery(query: string) {
+  const [matches, setMatches] = useState(() => window.matchMedia(query).matches);
+  useEffect(() => {
+    const list = window.matchMedia(query);
+    const onChange = () => setMatches(list.matches);
+    list.addEventListener("change", onChange);
+    return () => list.removeEventListener("change", onChange);
+  }, [query]);
+  return matches;
 }
 
-function formatTime(value: string) {
-  return new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit" }).format(new Date(value));
-}
-
-function calendarUrl(task: Task) {
-  const start = new Date(task.scheduledAt);
-  const end = new Date(start.getTime() + 60 * 60 * 1000);
-  const stamp = (date: Date) => date.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
-  return `https://calendar.google.com/calendar/u/0/r/eventedit?text=${encodeURIComponent(task.title)}&dates=${stamp(start)}/${stamp(end)}&details=${encodeURIComponent(`Taskloom task · ${statusMeta[task.status].label}`)}`;
-}
-
-function initialChatMessage(): ChatMessage {
-  return { id: 1, role: "assistant", text: "Hi, I’m Chatloom. Ask me about your tasks, what to do next, or say “help” to see what I can do." };
-}
+const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
 
 export default function Home() {
-  const [tasks, setTasks] = useState<Task[]>(getStoredTasks);
-  const [filter, setFilter] = useState<"all" | TaskStatus>("all");
-  const [search, setSearch] = useState("");
-  const [title, setTitle] = useState("");
-  const [date, setDate] = useState(todayInput);
-  const [time, setTime] = useState(timeInput);
-  const [newStatus, setNewStatus] = useState<TaskStatus>("todo");
-  const [showComposer, setShowComposer] = useState(true);
-  const [isRoutineOpen, setIsRoutineOpen] = useState(false);
-  const [routine, setRoutine] = useState("");
-  const [isChatOpen, setIsChatOpen] = useState(false);
-  const [chatInput, setChatInput] = useState("");
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([initialChatMessage()]);
+  const { tasks, today, now, change, undo, rolledOver, dismissRollover } = useTaskStore();
+  const [view, setView] = useState<View>("today");
+  const [query, setQuery] = useState("");
+  const [allFilter, setAllFilter] = useState<"all" | TaskStatus>("all");
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [highlightId, setHighlightId] = useState<string | null>(null);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [planOpen, setPlanOpen] = useState(false);
+  const [chatOpen, setChatOpen] = useState(false);
+  const [focusOpen, setFocusOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [sheetOpen, setSheetOpen] = useState(false);
+  const [showDone, setShowDone] = useState(() => readPref("taskloom-show-done", "1", ["0", "1"] as const) === "1");
+  const [theme, setTheme] = useState<Theme>(() => readPref<Theme>("taskloom-theme", "dark", ["dark", "light"] as const));
+  const isMobile = useMediaQuery("(max-width: 860px)");
+
+  const composerRef = useRef<ComposerHandle>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const mainRef = useRef<HTMLElement>(null);
+  const tasksRef = useRef(tasks);
+  tasksRef.current = tasks;
 
   useEffect(() => {
-    window.localStorage.setItem("taskloom-tasks", JSON.stringify(tasks));
-  }, [tasks]);
+    document.documentElement.dataset.theme = theme;
+    document.documentElement.style.colorScheme = theme;
+    document.querySelector('meta[name="theme-color"]')?.setAttribute("content", theme === "dark" ? "#141615" : "#f6f6f3");
+    writePref("taskloom-theme", theme);
+  }, [theme]);
+
+  useEffect(() => writePref("taskloom-show-done", showDone ? "1" : "0"), [showDone]);
 
   useEffect(() => {
-    const rolloverTimer = window.setInterval(() => {
-      setTasks((current) => normalizeTasks(current));
-    }, 60_000);
-    return () => window.clearInterval(rolloverTimer);
+    if (!highlightId) return;
+    const timer = window.setTimeout(() => setHighlightId(null), 1800);
+    return () => window.clearTimeout(timer);
+  }, [highlightId]);
+
+  // ---------- Derived data ----------
+  const tomorrow = shiftDate(today, 1);
+  const todays = useMemo(() => tasks.filter((task) => taskDate(task) === today).sort(byTime), [tasks, today]);
+  const openToday = todays.filter((task) => task.status === "todo");
+  const laterToday = todays.filter((task) => task.status === "later");
+  const doneToday = todays.filter((task) => task.status === "done");
+  const upcoming = useMemo(() => tasks.filter((task) => taskDate(task) > today && task.status !== "done"), [tasks, today]);
+  const completed = useMemo(() => tasks.filter((task) => task.status === "done"), [tasks]);
+  const focusTask = useMemo(() => currentTask(tasks, today), [tasks, today]);
+  const counts = {
+    today: openToday.length + laterToday.length,
+    upcoming: upcoming.length,
+    completed: completed.length,
+    all: tasks.length,
+  };
+  const searching = query.trim().length > 0;
+  const searchResults = useMemo(
+    () => (searching ? groupByDate(tasks.filter((task) => matchesQuery(task, query, today)), today) : []),
+    [searching, tasks, query, today],
+  );
+
+  // ---------- Actions ----------
+  const revealTask = useCallback(
+    (task: Task) => {
+      const date = taskDate(task);
+      setQuery("");
+      setView(date === today ? "today" : date > today ? "upcoming" : "all");
+      if (task.status === "done" && date === today) setShowDone(true);
+      setHighlightId(task.id);
+      setChatOpen((open) => (isMobile ? false : open));
+      requestAnimationFrame(() =>
+        requestAnimationFrame(() => {
+          const row = document.querySelector<HTMLElement>(`[data-task-id="${task.id}"]`);
+          row?.scrollIntoView({ block: "center", behavior: "smooth" });
+          row?.focus({ preventScroll: true });
+        }),
+      );
+    },
+    [today, isMobile],
+  );
+
+  const addTask = useCallback(
+    ({ title, date, time, status }: { title: string; date: string; time: string; status: TaskStatus }) => {
+      const task: Task = { id: newId(), title, status, scheduledAt: `${date}T${time}` };
+      change((current) => [task, ...current], {
+        message: `Added to ${relativeDayLabel(date, today)}`,
+        description: `${title} · ${formatTime(time)}`,
+      });
+      setHighlightId(task.id);
+      return task;
+    },
+    [change, today],
+  );
+
+  const patchTask = useCallback(
+    (id: string, patch: Partial<Task>, message: string, description?: string) =>
+      change((current) => current.map((task) => (task.id === id ? { ...task, ...patch } : task)), { message, description }),
+    [change],
+  );
+
+  const actions: TaskActions = useMemo(
+    () => ({
+      toggleDone: (task) =>
+        patchTask(task.id, { status: task.status === "done" ? "todo" : "done" }, task.status === "done" ? "Marked not done" : "Task completed", task.title),
+      toggleLater: (task) =>
+        patchTask(task.id, { status: task.status === "later" ? "todo" : "later" }, task.status === "later" ? "Back to Not done" : "Set for later", task.title),
+      moveTo: (task, date) =>
+        patchTask(task.id, { scheduledAt: `${date}T${taskTime(task)}`, rolledFrom: undefined }, `Moved to ${relativeDayLabel(date, today)}`, task.title),
+      remove: (task) => change((current) => current.filter((other) => other.id !== task.id), { message: "Task deleted", description: task.title }),
+      update: (task, patch) => {
+        const dateChanged = patch.scheduledAt && patch.scheduledAt.slice(0, 10) !== taskDate(task);
+        patchTask(task.id, { ...patch, ...(dateChanged ? { rolledFrom: undefined } : {}) }, "Task updated", patch.title ?? task.title);
+      },
+      calendarOpened: () => toast("Calendar event ready", { description: "Review and save it in the Google Calendar tab.", duration: 3500 }),
+    }),
+    [change, patchTask, today],
+  );
+
+  const clearCompleted = useCallback(() => {
+    const count = tasksRef.current.filter((task) => task.status === "done").length;
+    if (!count) return toast("Nothing completed to clear");
+    change((current) => current.filter((task) => task.status !== "done"), { message: `Cleared ${plural(count, "completed task")}` });
+  }, [change]);
+
+  const commitPlan = useCallback(
+    (items: ExtractedTask[]) => {
+      const created: Task[] = items.map((item) => ({ id: newId("plan"), title: item.title, status: "todo", scheduledAt: `${item.date}T${item.time}` }));
+      const firstDate = created[0] ? taskDate(created[0]) : today;
+      change((current) => [...created, ...current], { message: `Added ${plural(created.length, "task")} to ${relativeDayLabel(firstDate, today)}` });
+      setQuery("");
+      setView(firstDate === today ? "today" : "upcoming");
+    },
+    [change, today],
+  );
+
+  const moveRolledToToday = useCallback(() => {
+    const ids = new Set(rolledOver.map((task) => task.id));
+    change(
+      (current) =>
+        current.map((task) => (ids.has(task.id) && task.status !== "done" && taskDate(task) === tomorrow ? { ...task, scheduledAt: `${today}T${taskTime(task)}`, rolledFrom: undefined } : task)),
+      { message: `Moved ${plural(ids.size, "task")} to Today` },
+    );
+    dismissRollover();
+  }, [change, dismissRollover, rolledOver, today, tomorrow]);
+
+  const onChatAction = useCallback(
+    (action: ChatAction) => {
+      if (action.type === "plan") {
+        setChatOpen(false);
+        setPlanOpen(true);
+      } else if (action.type === "add") {
+        addTask({ title: action.title, date: action.date, time: action.time, status: "todo" });
+      }
+    },
+    [addTask],
+  );
+
+  const startNewTask = useCallback(() => {
+    if (isMobile) {
+      setSheetOpen(true);
+      return;
+    }
+    setQuery("");
+    if (view === "completed") setView("today");
+    requestAnimationFrame(() => composerRef.current?.focus());
+  }, [isMobile, view]);
+
+  const focusSearch = useCallback(() => {
+    searchRef.current?.focus();
+    searchRef.current?.select();
   }, []);
 
-  const counts = useMemo(() => ({
-    all: tasks.length,
-    todo: tasks.filter((task) => task.status === "todo").length,
-    done: tasks.filter((task) => task.status === "done").length,
-    later: tasks.filter((task) => task.status === "later").length,
-  }), [tasks]);
+  const goTo = useCallback((next: View) => {
+    setQuery("");
+    setView(next);
+    mainRef.current?.scrollTo?.({ top: 0 });
+    window.scrollTo({ top: 0 });
+  }, []);
 
-  const visibleTasks = useMemo(() => {
-    const query = search.trim().toLowerCase();
-    return [...tasks]
-      .filter((task) => (filter === "all" || task.status === filter) && (!query || task.title.toLowerCase().includes(query)))
-      .sort((a, b) => a.scheduledAt.localeCompare(b.scheduledAt));
-  }, [filter, search, tasks]);
+  // ---------- Keyboard ----------
+  const anyModalOpen = paletteOpen || planOpen || focusOpen || shortcutsOpen || sheetOpen;
+  const keyState = useRef({ anyModalOpen, actions, startNewTask, focusSearch, goTo, undo, focusTask });
+  keyState.current = { anyModalOpen, actions, startNewTask, focusSearch, goTo, undo, focusTask };
 
-  const taskWindows = useMemo(() => {
-    const grouped = new Map<string, Task[]>();
-    visibleTasks.forEach((task) => {
-      const key = task.scheduledAt.slice(0, 10);
-      grouped.set(key, [...(grouped.get(key) || []), task]);
-    });
-    return Array.from(grouped.entries());
-  }, [visibleTasks]);
+  useEffect(() => {
+    const rows = () => Array.from(document.querySelectorAll<HTMLElement>("main [data-task-id]"));
+    const focusRow = (row: HTMLElement | undefined) => {
+      if (!row) return;
+      row.focus({ preventScroll: true });
+      row.scrollIntoView({ block: "nearest" });
+    };
 
-  const addTask = () => {
-    const trimmed = title.trim();
-    if (!trimmed || !date || !time) {
-      toast.error("Add a task, date, and time first");
-      return;
-    }
-    setTasks((current) => [{ id: `${Date.now()}`, title: trimmed, status: newStatus, scheduledAt: `${date}T${time}` }, ...current]);
-    setTitle("");
-    setNewStatus("todo");
-    toast.success("Task added");
-  };
+    const onKeyDown = (event: KeyboardEvent) => {
+      const state = keyState.current;
+      const modifier = event.metaKey || event.ctrlKey;
+      const key = event.key;
 
-  const toggleTask = (id: string) => setTasks((current) => current.map((task) => task.id === id ? { ...task, status: task.status === "done" ? "todo" : "done" } : task));
+      if (modifier && key.toLowerCase() === "k") {
+        event.preventDefault();
+        setPaletteOpen((open) => !open);
+        return;
+      }
+      if (event.defaultPrevented || state.anyModalOpen) return;
+      const typing = isTypingTarget(event.target);
 
-  const cycleStatus = (id: string) => setTasks((current) => current.map((task) => {
-    if (task.id !== id) return task;
-    const nextStatus = task.status === "todo" ? "later" : task.status === "later" ? "done" : "todo";
-    return { ...task, status: nextStatus };
-  }));
+      if (modifier && key.toLowerCase() === "z" && !event.shiftKey && !typing) {
+        event.preventDefault();
+        if (!state.undo()) toast("Nothing to undo", { duration: 1500 });
+        return;
+      }
+      if (typing) {
+        if (key === "Escape" && event.target === searchRef.current) {
+          setQuery("");
+          searchRef.current?.blur();
+        }
+        return;
+      }
+      if (modifier || event.altKey) return;
 
-  const removeTask = (id: string) => {
-    const removed = tasks.find((task) => task.id === id);
-    if (!removed) return;
-    setTasks((current) => current.filter((task) => task.id !== id));
-    toast("Task removed", { action: { label: "Undo", onClick: () => setTasks((current) => [removed, ...current]) } });
-  };
+      const activeRow = (document.activeElement as HTMLElement | null)?.closest<HTMLElement>("[data-task-id]");
+      const task = activeRow ? tasksRef.current.find((item) => item.id === activeRow.dataset.taskId) : undefined;
+      const list = rows();
 
-  const extractRoutine = () => {
-    if (!routine.trim()) {
-      toast.error("Paste your routine first");
-      return;
-    }
-    const extracted = parseRoutine(routine, todayInput());
-    if (!extracted.length) {
-      toast.error("Add one routine item per line");
-      return;
-    }
-    setTasks((current) => [
-      ...extracted.map((task, index) => ({
-        id: `routine-${Date.now()}-${index}`,
-        title: task.title,
-        status: "todo" as TaskStatus,
-        scheduledAt: `${task.date}T${task.time}`,
+      switch (key) {
+        case "j":
+        case "ArrowDown":
+          if (key === "ArrowDown" && !activeRow) return;
+          event.preventDefault();
+          focusRow(activeRow ? list[list.indexOf(activeRow) + 1] ?? activeRow : list[0]);
+          return;
+        case "k":
+        case "ArrowUp":
+          if (key === "ArrowUp" && !activeRow) return;
+          event.preventDefault();
+          focusRow(activeRow ? list[list.indexOf(activeRow) - 1] ?? activeRow : list[list.length - 1]);
+          return;
+        case "n":
+          event.preventDefault();
+          state.startNewTask();
+          return;
+        case "/":
+          event.preventDefault();
+          state.focusSearch();
+          return;
+        case "p":
+          event.preventDefault();
+          setPlanOpen(true);
+          return;
+        case "c":
+          event.preventDefault();
+          setChatOpen((open) => !open);
+          return;
+        case "f":
+          event.preventDefault();
+          setFocusOpen(true);
+          return;
+        case "?":
+          event.preventDefault();
+          setShortcutsOpen(true);
+          return;
+        case "1":
+        case "2":
+        case "3":
+        case "4":
+          state.goTo(views[Number(key) - 1].id);
+          return;
+        case "Escape":
+          setQuery("");
+          setChatOpen(false);
+          return;
+      }
+
+      if (!task || !activeRow) return;
+      const index = list.indexOf(activeRow);
+      const neighbour = list[index + 1] ?? list[index - 1];
+      const keepFocus = (id: string) => requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-task-id="${id}"]`)?.focus({ preventScroll: true }));
+      switch (key.toLowerCase()) {
+        case "x":
+          event.preventDefault();
+          state.actions.toggleDone(task);
+          keepFocus(task.id);
+          return;
+        case "l":
+          if (task.status === "done") return;
+          state.actions.toggleLater(task);
+          keepFocus(task.id);
+          return;
+        case "t": {
+          if (task.status === "done") return;
+          const date = taskDate(task) === today || taskDate(task) < today ? shiftDate(today, 1) : today;
+          state.actions.moveTo(task, date);
+          requestAnimationFrame(() => neighbour?.focus({ preventScroll: true }));
+          return;
+        }
+        case "e":
+        case "enter":
+          event.preventDefault();
+          setEditingId(task.id);
+          return;
+        case "backspace":
+        case "delete":
+          event.preventDefault();
+          state.actions.remove(task);
+          requestAnimationFrame(() => neighbour?.focus({ preventScroll: true }));
+          return;
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [today]);
+
+  // ---------- Palette commands ----------
+  const commands: PaletteCommand[] = useMemo(
+    () => [
+      { id: "new", group: "Actions", label: "New task", icon: <Plus size={15} />, shortcut: "N", keywords: ["add", "create"], run: startNewTask },
+      { id: "plan", group: "Actions", label: "Plan my day", icon: <Sparkles size={15} />, shortcut: "P", keywords: ["routine", "schedule"], run: () => setPlanOpen(true) },
+      { id: "focus", group: "Actions", label: "Focus on current task", icon: <Target size={15} />, shortcut: "F", run: () => setFocusOpen(true) },
+      { id: "chat", group: "Actions", label: "Open Chatloom", icon: <MessagesSquare size={15} />, shortcut: "C", keywords: ["ask", "assistant", "chat"], run: () => setChatOpen(true) },
+      { id: "search", group: "Actions", label: "Search tasks", icon: <Search size={15} />, shortcut: "/", keywords: ["find"], run: focusSearch },
+      { id: "undo", group: "Actions", label: "Undo last change", icon: <Undo2 size={15} />, shortcut: `${mod}Z`, run: () => void (undo() || toast("Nothing to undo")) },
+      { id: "clear", group: "Actions", label: "Clear completed tasks", icon: <Trash2 size={15} />, keywords: ["delete", "done"], run: clearCompleted },
+      ...views.map((item, index) => ({
+        id: `go-${item.id}`,
+        group: "Go to" as const,
+        label: `Go to ${item.label}`,
+        icon: item.icon,
+        shortcut: String(index + 1),
+        run: () => goTo(item.id),
       })),
-      ...current,
-    ]);
-    setRoutine("");
-    setIsRoutineOpen(false);
-    toast.success(`${extracted.length} tasks added as Not done`);
+      { id: "gcal", group: "Go to", label: "Open Google Calendar", icon: <ExternalLink size={15} />, run: () => window.open(GOOGLE_CALENDAR_URL, "_blank", "noopener") },
+      {
+        id: "theme",
+        group: "Settings",
+        label: theme === "dark" ? "Switch to light theme" : "Switch to dark theme",
+        icon: theme === "dark" ? <Sun size={15} /> : <Moon size={15} />,
+        keywords: ["theme", "appearance", "dark", "light"],
+        run: () => setTheme((current) => (current === "dark" ? "light" : "dark")),
+      },
+      { id: "keys", group: "Settings", label: "Keyboard shortcuts", icon: <Keyboard size={15} />, shortcut: "?", run: () => setShortcutsOpen(true) },
+    ],
+    [clearCompleted, focusSearch, goTo, startNewTask, theme, undo],
+  );
+
+  // ---------- Rendering helpers ----------
+  const row = (task: Task, showDate = false) => (
+    <TaskRow
+      key={task.id}
+      task={task}
+      today={today}
+      now={now}
+      actions={actions}
+      showDate={showDate}
+      editing={editingId === task.id}
+      onEditChange={setEditingId}
+      highlighted={highlightId === task.id}
+    />
+  );
+
+  const renderGroups = (groups: DateGroup[]) =>
+    groups.map((group) => (
+      <section className="day-group" key={group.key} aria-labelledby={`day-${group.key}`}>
+        <h3 className="day-head" id={`day-${group.key}`}>
+          <span className="day-label">{group.label}</span>
+          {group.sublabel && <span className="day-sub">{group.sublabel}</span>}
+          <span className="day-count">{group.tasks.length}</span>
+        </h3>
+        <ul className="task-list">{group.tasks.map((task) => row(task))}</ul>
+      </section>
+    ));
+
+  const composer = (defaultDate: string) => (
+    <div className="composer-wrap">
+      <Composer ref={composerRef} today={today} defaultDate={defaultDate} onAdd={addTask} />
+    </div>
+  );
+
+  // ---------- Views ----------
+  const renderToday = () => {
+    const total = todays.length;
+    const progress = total ? Math.round((doneToday.length / total) * 100) : 0;
+    const sub = !total
+      ? "Nothing scheduled. You have room to breathe."
+      : openToday.length === 0
+        ? laterToday.length
+          ? `Done with what’s due. ${plural(laterToday.length, "task")} set for later.`
+          : "Done for today. Nicely handled."
+        : `${openToday.length} left today${focusTask && taskDate(focusTask) === today ? ` · next up: ${focusTask.title} at ${formatTime(focusTask.scheduledAt)}` : ""}`;
+    const tomorrowTasks = upcoming.filter((task) => taskDate(task) === tomorrow).sort(byTime);
+
+    return (
+      <>
+        <header className="page-head">
+          <p className="eyebrow">{formatLongDay(today)}</p>
+          <h1 className="page-title">{greeting()}.</h1>
+          <p className="page-sub">{sub}</p>
+          {total > 0 && (
+            <div className="progress-row">
+              <div className="progress" role="progressbar" aria-valuemin={0} aria-valuemax={total} aria-valuenow={doneToday.length} aria-label={`${doneToday.length} of ${total} done today`}>
+                <span style={{ width: `${progress}%` }} />
+              </div>
+              <span className="progress-label">
+                {doneToday.length} of {total} done
+              </span>
+              {focusTask && (
+                <button type="button" className="btn btn-quiet btn-sm" onClick={() => setFocusOpen(true)}>
+                  <Target size={14} aria-hidden="true" /> Focus
+                </button>
+              )}
+            </div>
+          )}
+        </header>
+
+        {rolledOver.length > 0 && (
+          <div className="notice" role="status">
+            <RotateCcw size={16} aria-hidden="true" className="notice-icon" />
+            <p>
+              <strong>
+                {plural(rolledOver.length, "unfinished task")} moved to tomorrow.
+              </strong>{" "}
+              <span className="muted">Taskloom carries anything left open on a past day forward.</span>
+            </p>
+            <div className="notice-actions">
+              <button
+                type="button"
+                className="btn btn-quiet btn-sm"
+                onClick={() => {
+                  const first = rolledOver[0];
+                  dismissRollover();
+                  const live = tasksRef.current.find((task) => task.id === first.id);
+                  if (live) revealTask(live);
+                }}
+              >
+                Review
+              </button>
+              <button type="button" className="btn btn-quiet btn-sm" onClick={moveRolledToToday}>
+                Move all to today
+              </button>
+              <button type="button" className="icon-btn" aria-label="Dismiss" onClick={dismissRollover}>
+                <X size={14} />
+              </button>
+            </div>
+          </div>
+        )}
+
+        {composer(today)}
+
+        {total === 0 ? (
+          <EmptyState
+            icon={<Sparkles size={18} />}
+            title="Nothing scheduled."
+            body="You have room to breathe — or sketch the day in a few lines."
+            actions={
+              <>
+                <button type="button" className="btn btn-primary" onClick={() => setPlanOpen(true)}>
+                  <Sparkles size={14} aria-hidden="true" /> Plan my day
+                </button>
+                <button type="button" className="btn btn-quiet" onClick={startNewTask}>
+                  <Plus size={14} aria-hidden="true" /> Add a task
+                </button>
+              </>
+            }
+          />
+        ) : (
+          <section aria-label="Today’s tasks" className="today-list">
+            {openToday.length > 0 && <ul className="task-list">{openToday.map((task) => row(task))}</ul>}
+            {openToday.length === 0 && (
+              <p className="inline-empty">
+                <CheckCircle2 size={16} aria-hidden="true" /> Everything due today is done.
+              </p>
+            )}
+            {laterToday.length > 0 && (
+              <div className="subgroup">
+                <h3 className="subgroup-head">
+                  Later <span className="day-count">{laterToday.length}</span>
+                </h3>
+                <ul className="task-list">{laterToday.map((task) => row(task))}</ul>
+              </div>
+            )}
+            {doneToday.length > 0 && (
+              <div className="subgroup">
+                <button type="button" className="subgroup-head subgroup-toggle" aria-expanded={showDone} onClick={() => setShowDone((open) => !open)}>
+                  <ChevronDown size={14} className="chev" aria-hidden="true" /> Done <span className="day-count">{doneToday.length}</span>
+                </button>
+                {showDone && <ul className="task-list">{doneToday.map((task) => row(task))}</ul>}
+              </div>
+            )}
+          </section>
+        )}
+
+        <section className="up-next" aria-labelledby="up-next-title">
+          <div className="up-next-head">
+            <h2 id="up-next-title">Up next</h2>
+            {upcoming.length > 0 && (
+              <button type="button" className="link-btn" onClick={() => goTo("upcoming")}>
+                All upcoming <span className="day-count">{upcoming.length}</span> <ArrowRight size={13} aria-hidden="true" />
+              </button>
+            )}
+          </div>
+          {tomorrowTasks.length ? (
+            <>
+              <h3 className="day-head">
+                <span className="day-label">Tomorrow</span>
+                <span className="day-sub">{formatLongDay(tomorrow)}</span>
+              </h3>
+              <ul className="task-list task-list-compact">{tomorrowTasks.slice(0, 4).map((task) => row(task))}</ul>
+              {tomorrowTasks.length > 4 && (
+                <button type="button" className="link-btn more-link" onClick={() => goTo("upcoming")}>
+                  +{tomorrowTasks.length - 4} more tomorrow
+                </button>
+              )}
+            </>
+          ) : (
+            <p className="inline-empty muted">
+              {upcoming.length ? `Nothing tomorrow. Next: ${[...upcoming].sort(byTime)[0].title}, ${relativeDayLabel(taskDate([...upcoming].sort(byTime)[0]), today)}.` : "Nothing planned yet beyond today."}
+            </p>
+          )}
+        </section>
+      </>
+    );
   };
 
-  const sendChatMessage = () => {
-    const text = chatInput.trim();
-    if (!text) return;
-    const lower = text.toLowerCase();
-    let reply = "I can help with your Taskloom list. Try asking how many tasks you have, what to do next, or say help.";
-    if (/(^|\s)(hi|hello|hey)(\s|$)/.test(lower)) {
-      reply = "Hello. I’m ready to help you stay on top of your day.";
-    } else if (lower.includes("help") || lower.includes("what can you do")) {
-      reply = "Try: “How many tasks are not done?”, “What should I do next?”, “Show today’s tasks”, or “Give me a focus tip.”";
-    } else if (lower.includes("focus") || lower.includes("tip") || lower.includes("motivat")) {
-      reply = "Pick one small task, give it 20 focused minutes, and let the green checkbox be your only next goal.";
-    } else if (lower.includes("how many") || lower.includes("count") || lower.includes("status")) {
-      reply = `You have ${counts.all} tasks: ${counts.todo} not done, ${counts.later} later, and ${counts.done} done.`;
-    } else if (lower.includes("next") || lower.includes("what should i do")) {
-      const next = tasks.filter((task) => task.status !== "done").sort((a, b) => a.scheduledAt.localeCompare(b.scheduledAt))[0];
-      reply = next ? `Your next open task is “${next.title}” at ${formatTime(next.scheduledAt)}.` : "You’re all clear. Nice work.";
-    } else if (lower.includes("today") || lower.includes("show tasks")) {
-      const todayTasks = tasks.filter((task) => task.scheduledAt.slice(0, 10) === todayInput());
-      reply = todayTasks.length ? `Today: ${todayTasks.map((task) => `${task.title} (${statusMeta[task.status].label})`).join(" · ")}` : "You have no tasks scheduled today.";
-    }
-    setChatMessages((current) => [...current, { id: Date.now(), role: "user", text }, { id: Date.now() + 1, role: "assistant", text: reply }]);
-    setChatInput("");
+  const renderUpcoming = () => {
+    const sections = upcomingSections(upcoming, today);
+    return (
+      <>
+        <header className="page-head">
+          <p className="eyebrow">Next days</p>
+          <h1 className="page-title">Upcoming</h1>
+          <p className="page-sub">{upcoming.length ? `${plural(upcoming.length, "task")} ahead.` : "Nothing planned yet."}</p>
+        </header>
+        {composer(tomorrow)}
+        {sections.length ? (
+          sections.map((section) => (
+            <section key={section.id} className="window" aria-labelledby={`win-${section.id}`}>
+              {section.id !== "tomorrow" && (
+                <h2 className="window-title" id={`win-${section.id}`}>
+                  {section.title}
+                </h2>
+              )}
+              {section.id === "tomorrow" && (
+                <h2 className="sr-only" id={`win-${section.id}`}>
+                  Tomorrow
+                </h2>
+              )}
+              {renderGroups(section.groups)}
+            </section>
+          ))
+        ) : (
+          <EmptyState
+            icon={<CalendarClock size={18} />}
+            title="Nothing planned yet."
+            body="Anything you schedule after today shows up here, grouped by day."
+            actions={
+              <button type="button" className="btn btn-quiet" onClick={() => setPlanOpen(true)}>
+                <Sparkles size={14} aria-hidden="true" /> Plan tomorrow
+              </button>
+            }
+          />
+        )}
+      </>
+    );
   };
+
+  const renderCompleted = () => {
+    const groups = groupByDate(completed, today, "desc");
+    return (
+      <>
+        <header className="page-head page-head-row">
+          <div>
+            <p className="eyebrow">Review</p>
+            <h1 className="page-title">Completed</h1>
+            <p className="page-sub">{completed.length ? `${plural(completed.length, "task")} done${doneToday.length ? `, ${doneToday.length} today` : ""}.` : "Nothing completed yet."}</p>
+          </div>
+          {completed.length > 0 && (
+            <button type="button" className="btn btn-quiet btn-sm" onClick={clearCompleted}>
+              <Trash2 size={14} aria-hidden="true" /> Clear completed
+            </button>
+          )}
+        </header>
+        {groups.length ? (
+          renderGroups(groups)
+        ) : (
+          <EmptyState icon={<CheckCircle2 size={18} />} title="Nothing completed yet." body="Check a task off and it lands here — a quiet record of what you got done." />
+        )}
+      </>
+    );
+  };
+
+  const renderAll = () => {
+    const filtered = tasks.filter((task) => allFilter === "all" || task.status === allFilter);
+    const statusCounts = {
+      all: tasks.length,
+      todo: tasks.filter((task) => task.status === "todo").length,
+      later: tasks.filter((task) => task.status === "later").length,
+      done: completed.length,
+    };
+    return (
+      <>
+        <header className="page-head">
+          <p className="eyebrow">Everything</p>
+          <h1 className="page-title">All tasks</h1>
+          <p className="page-sub">
+            {plural(tasks.length, "task")} saved on this device.
+          </p>
+        </header>
+        <div className="filter-bar segment" role="radiogroup" aria-label="Filter by status">
+          {(["all", "todo", "later", "done"] as const).map((value) => (
+            <button key={value} type="button" role="radio" aria-checked={allFilter === value} className={`segment-item status-${value}`} onClick={() => setAllFilter(value)}>
+              {value !== "all" && <span className="status-glyph" aria-hidden="true" />}
+              {value === "all" ? "All" : value === "todo" ? "Not done" : value === "later" ? "Later" : "Done"}
+              <span className="segment-count">{statusCounts[value]}</span>
+            </button>
+          ))}
+        </div>
+        {composer(today)}
+        {filtered.length ? (
+          renderGroups(groupByDate(filtered, today))
+        ) : (
+          <EmptyState icon={<Inbox size={18} />} title={tasks.length ? "No tasks with that status." : "Your list is empty."} body={tasks.length ? "Try another filter." : "Add your first task above — it only takes a name and a time."} />
+        )}
+      </>
+    );
+  };
+
+  const renderSearch = () => {
+    const count = searchResults.reduce((sum, group) => sum + group.tasks.length, 0);
+    return (
+      <>
+        <header className="page-head page-head-row">
+          <div>
+            <p className="eyebrow">Search</p>
+            <h1 className="page-title page-title-sm">
+              {count ? plural(count, "result") : "No results"} for “{query.trim()}”
+            </h1>
+          </div>
+          <button type="button" className="btn btn-quiet btn-sm" onClick={() => setQuery("")}>
+            Clear <kbd className="kbd">esc</kbd>
+          </button>
+        </header>
+        {count ? (
+          renderGroups(searchResults)
+        ) : (
+          <EmptyState
+            icon={<Search size={18} />}
+            title="No tasks match that search."
+            body="Search looks at task names, status, and days like “tomorrow” or “friday”."
+            actions={
+              <button
+                type="button"
+                className="btn btn-quiet"
+                onClick={() => {
+                  addTask({ title: query.trim(), date: today, time: nextQuarterHour(), status: "todo" });
+                  setQuery("");
+                  setView("today");
+                }}
+              >
+                <Plus size={14} aria-hidden="true" /> Create “{query.trim()}” for today
+              </button>
+            }
+          />
+        )}
+      </>
+    );
+  };
+
+  const content = searching ? renderSearch() : view === "today" ? renderToday() : view === "upcoming" ? renderUpcoming() : view === "completed" ? renderCompleted() : renderAll();
 
   return (
-    <div className="app-shell">
-      <header className="topbar">
-        <a className="brand" href="/" aria-label="Taskloom home"><span className="brand-mark"><ListChecks size={17} /></span><span>taskloom</span></a>
-        <div className="header-actions">
-          <button className="routine-link" type="button" onClick={() => setIsRoutineOpen(true)}><Bot size={15} /> Plan my day</button>
-          <button className="chatloom-link" type="button" onClick={() => setIsChatOpen((open) => !open)}><MessageCircle size={15} /> Chatloom</button>
-          <a className="calendar-link" href="https://calendar.google.com/calendar/u/0/r" target="_blank" rel="noreferrer"><CalendarDays size={15} /> Google Calendar <ExternalLink size={12} /></a>
-        </div>
-      </header>
+    <div className={`app${chatOpen ? " chat-open" : ""}`}>
+      <a href="#main" className="skip-link">
+        Skip to tasks
+      </a>
 
-      <main className="workspace">
-        <div className="page-heading">
-          <div><p className="today-label">{formatDay(todayInput())}</p><h1>My tasks</h1></div>
-          <div className="summary"><span className="summary-number">{counts.todo}</span><span>not done</span></div>
+      <aside className="sidebar" aria-label="Navigation">
+        <div className="brand">
+          <span className="brand-mark" aria-hidden="true">
+            <BrandMark />
+          </span>
+          <span>Taskloom</span>
         </div>
 
-        <section className="composer panel-card" aria-label="Add a task">
-          <button className="composer-toggle" type="button" onClick={() => setShowComposer((open) => !open)} aria-expanded={showComposer}>
-            <span className="add-icon"><Plus size={18} /></span><strong>Add task</strong><ChevronDown className={showComposer ? "rotate" : ""} size={17} />
+        <button type="button" className="sidebar-search" onClick={() => setPaletteOpen(true)}>
+          <Search size={15} aria-hidden="true" />
+          <span>Search or jump to…</span>
+          <kbd className="kbd">{mod}K</kbd>
+        </button>
+
+        <nav className="nav" aria-label="Views">
+          {views.map((item, index) => (
+            <button
+              key={item.id}
+              type="button"
+              className={`nav-item${view === item.id && !searching ? " is-active" : ""}`}
+              aria-current={view === item.id && !searching ? "page" : undefined}
+              onClick={() => goTo(item.id)}
+            >
+              <span className="nav-icon" aria-hidden="true">
+                {item.icon}
+              </span>
+              <span className="nav-label">{item.label}</span>
+              {counts[item.id] > 0 && <span className="nav-count">{counts[item.id]}</span>}
+              <kbd className="kbd nav-kbd">{index + 1}</kbd>
+            </button>
+          ))}
+        </nav>
+
+        <div className="nav-section">
+          <p className="nav-heading">Tools</p>
+          <button type="button" className="nav-item" onClick={() => setPlanOpen(true)}>
+            <span className="nav-icon" aria-hidden="true">
+              <Sparkles size={16} />
+            </span>
+            <span className="nav-label">Plan my day</span>
+            <kbd className="kbd nav-kbd">P</kbd>
           </button>
-          {showComposer && <div className="composer-body">
-            <input className="task-input" value={title} onChange={(event) => setTitle(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") addTask(); }} placeholder="What needs to be done?" aria-label="Task name" autoFocus />
-            <div className="field-row">
-              <label className="field"><span><CalendarDays size={14} /> Date</span><input type="date" value={date} onChange={(event) => setDate(event.target.value)} required aria-label="Task date" /></label>
-              <label className="field"><span><Clock3 size={14} /> Time</span><input type="time" value={time} onChange={(event) => setTime(event.target.value)} required aria-label="Task time" /></label>
-              <div className="status-choice"><span>Status</span><div className="status-options">
-                {(["todo", "later"] as const).map((value) => <button key={value} type="button" className={`choice ${newStatus === value ? "selected" : ""} ${statusMeta[value].className}`} onClick={() => setNewStatus(value)}><span className="status-dot" />{statusMeta[value].label}</button>)}
-              </div></div>
-              <button className="add-button" type="button" onClick={addTask}><Plus size={16} /> Add</button>
-            </div>
-          </div>}
-        </section>
+          <button type="button" className={`nav-item${chatOpen ? " is-active" : ""}`} aria-pressed={chatOpen} onClick={() => setChatOpen((open) => !open)}>
+            <span className="nav-icon" aria-hidden="true">
+              <MessagesSquare size={16} />
+            </span>
+            <span className="nav-label">Chatloom</span>
+            <kbd className="kbd nav-kbd">C</kbd>
+          </button>
+          <button type="button" className="nav-item" onClick={() => setFocusOpen(true)}>
+            <span className="nav-icon" aria-hidden="true">
+              <Target size={16} />
+            </span>
+            <span className="nav-label">Focus</span>
+            <kbd className="kbd nav-kbd">F</kbd>
+          </button>
+        </div>
 
-        <section className="list-card panel-card">
-          <div className="list-toolbar">
-            <div className="filter-tabs" role="tablist" aria-label="Task filters">
-              {(["all", "todo", "later", "done"] as const).map((value) => <button key={value} type="button" role="tab" aria-selected={filter === value} className={`filter-tab ${filter === value ? "active" : ""}`} onClick={() => setFilter(value)}>{value === "all" ? "All" : statusMeta[value].label}<span>{counts[value]}</span></button>)}
-            </div>
-            <label className="search-box"><Search size={15} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search" aria-label="Search tasks" />{search && <button type="button" onClick={() => setSearch("")} aria-label="Clear search"><X size={14} /></button>}</label>
+        <div className="sidebar-foot">
+          <a className="nav-item" href={GOOGLE_CALENDAR_URL} target="_blank" rel="noreferrer">
+            <span className="nav-icon" aria-hidden="true">
+              <CalendarDays size={16} />
+            </span>
+            <span className="nav-label">Google Calendar</span>
+            <ExternalLink size={12} aria-hidden="true" className="muted" />
+          </a>
+          <div className="sidebar-utils">
+            <button type="button" className="icon-btn" onClick={() => setTheme((current) => (current === "dark" ? "light" : "dark"))} aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"} data-tip={theme === "dark" ? "Light theme" : "Dark theme"}>
+              {theme === "dark" ? <Sun size={15} /> : <Moon size={15} />}
+            </button>
+            <button type="button" className="icon-btn" onClick={() => setShortcutsOpen(true)} aria-label="Keyboard shortcuts" data-tip="Shortcuts  ?">
+              <Keyboard size={15} />
+            </button>
+            <span className="privacy-note" title="Tasks are stored in this browser’s local storage. Nothing is uploaded.">
+              <Lock size={11} aria-hidden="true" /> Stored on this device
+            </span>
           </div>
-          <div className="task-list" aria-live="polite">
-            {taskWindows.length ? taskWindows.map(([windowDate, windowTasks]: [string, Task[]]) => <section className="date-window" key={windowDate}>
-              <div className="date-window-header"><div><span className="date-window-title">{formatWindowLabel(windowDate)}</span><span className="date-window-date">{formatDay(windowDate)}</span></div><span className="window-count">{windowTasks.length}</span></div>
-              {windowTasks.map((task: Task) => <article className={`task-row ${task.status === "done" ? "is-done" : ""}`} key={task.id}>
-                <button className={`task-checkbox ${task.status === "done" ? "checked" : ""}`} type="button" onClick={() => toggleTask(task.id)} aria-label={`${task.status === "done" ? "Mark not done" : "Mark done"}: ${task.title}`}>{task.status === "done" && <Check size={14} />}</button>
-                <button className="task-main" type="button" onClick={() => cycleStatus(task.id)} title="Click to change status"><strong>{task.title}</strong><span><CalendarDays size={13} /> {formatDay(task.scheduledAt.slice(0, 10))}<i /> <Clock3 size={13} /> {formatTime(task.scheduledAt)}</span></button>
-                <button className={`status-pill ${statusMeta[task.status].className}`} type="button" onClick={() => cycleStatus(task.id)} aria-label={`Change status, currently ${statusMeta[task.status].label}`}><span className="status-dot" />{statusMeta[task.status].label}</button>
-                <a className="calendar-task" href={calendarUrl(task)} target="_blank" rel="noreferrer" aria-label={`Add ${task.title} to Google Calendar`} title="Add to Google Calendar"><CalendarDays size={15} /></a>
-                <button className="delete-button" type="button" onClick={() => removeTask(task.id)} aria-label={`Delete ${task.title}`}><Trash2 size={15} /></button>
-              </article>)}
-            </section>) : <div className="empty-state"><strong>No tasks here</strong><span>Add one above or choose another filter.</span></div>}
+        </div>
+      </aside>
+
+      <div className="main-col">
+        <div className="topbar">
+          <div className="brand brand-mobile">
+            <span className="brand-mark" aria-hidden="true">
+              <BrandMark />
+            </span>
+            <span>Taskloom</span>
           </div>
-        </section>
-
-        {isRoutineOpen && <div className="routine-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setIsRoutineOpen(false); }}>
-          <section className="routine-modal panel-card" role="dialog" aria-modal="true" aria-labelledby="routine-title">
-            <div className="routine-modal-head"><div><span className="today-label">Routine assistant</span><h2 id="routine-title">Turn your day into tasks</h2></div><button className="modal-close" type="button" onClick={() => setIsRoutineOpen(false)} aria-label="Close routine assistant">×</button></div>
-            <p className="routine-help">Share one routine item per line. Taskloom finds times and words like <strong>tomorrow</strong>, then adds everything as <strong>Not done</strong>.</p>
-            <textarea className="routine-input" value={routine} onChange={(event) => setRoutine(event.target.value)} placeholder={'Example:\n7:30 wake up and exercise\n9:00 finish the client proposal\nAfter lunch, call the dentist\n6 PM plan tomorrow'} aria-label="Describe your full-day routine" />
-            <div className="routine-modal-foot"><span><Bot size={14} /> Smart local planner · no API key</span><button className="add-button" type="button" onClick={extractRoutine}><Send size={15} /> Add tasks</button></div>
-          </section>
-        </div>}
-
-        {isChatOpen && <section className="chatloom-panel" aria-label="Chatloom assistant">
-          <div className="chatloom-head"><div><span className="chatloom-avatar"><MessageCircle size={15} /></span><div><strong>Chatloom</strong><span>Taskloom’s local assistant</span></div></div><button type="button" onClick={() => setIsChatOpen(false)} aria-label="Close Chatloom">×</button></div>
-          <div className="chatloom-messages" aria-live="polite">
-            {chatMessages.map((message) => <div className={`chat-bubble ${message.role}`} key={message.id}>{message.text}</div>)}
+          <label className="search">
+            <Search size={15} aria-hidden="true" />
+            <span className="sr-only">Search tasks</span>
+            <input
+              ref={searchRef}
+              type="search"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Search tasks"
+              autoComplete="off"
+              enterKeyHint="search"
+            />
+            {query ? (
+              <button type="button" className="icon-btn icon-btn-sm" onClick={() => setQuery("")} aria-label="Clear search">
+                <X size={13} />
+              </button>
+            ) : (
+              <kbd className="kbd search-kbd" aria-hidden="true">
+                /
+              </kbd>
+            )}
+          </label>
+          <div className="topbar-actions">
+            <button type="button" className="btn btn-quiet btn-sm topbar-plan" onClick={() => setPlanOpen(true)} aria-label="Plan my day">
+              <Sparkles size={15} aria-hidden="true" /> <span className="hide-mobile">Plan my day</span>
+            </button>
+            <button type="button" className={`btn btn-quiet btn-sm${chatOpen ? " is-active" : ""}`} onClick={() => setChatOpen((open) => !open)} aria-label="Chatloom" aria-pressed={chatOpen}>
+              <MessagesSquare size={15} aria-hidden="true" /> <span className="hide-mobile">Chatloom</span>
+            </button>
+            <button type="button" className="btn btn-quiet btn-sm show-mobile" onClick={() => setPaletteOpen(true)} aria-label="Command menu">
+              <CommandIcon size={15} aria-hidden="true" />
+            </button>
           </div>
-          <form className="chatloom-form" onSubmit={(event) => { event.preventDefault(); sendChatMessage(); }}><input value={chatInput} onChange={(event) => setChatInput(event.target.value)} placeholder="Ask Chatloom..." aria-label="Message Chatloom" /><button type="submit" aria-label="Send message"><Send size={15} /></button></form>
-        </section>}
+        </div>
 
-        <footer className="footer"><span>{counts.all} tasks · unfinished past tasks move to tomorrow</span><a href="https://calendar.google.com/calendar/u/0/r" target="_blank" rel="noreferrer">Open Google Calendar <ExternalLink size={12} /></a></footer>
-      </main>
+        <main id="main" ref={mainRef} className="content" tabIndex={-1}>
+          <div className="view" key={searching ? "search" : view}>
+            {content}
+          </div>
+          <footer className="content-foot">
+            <span>
+              <Lock size={11} aria-hidden="true" /> Tasks stay in this browser. Unfinished tasks from past days move to tomorrow.
+            </span>
+            <button type="button" className="link-btn hide-mobile" onClick={() => setShortcutsOpen(true)}>
+              <Keyboard size={12} aria-hidden="true" /> Shortcuts
+            </button>
+          </footer>
+        </main>
+      </div>
+
+      <nav className="tabbar" aria-label="Views">
+        {views.map((item) => (
+          <button key={item.id} type="button" className={`tab${view === item.id && !searching ? " is-active" : ""}`} aria-current={view === item.id && !searching ? "page" : undefined} onClick={() => goTo(item.id)}>
+            {item.icon}
+            <span>{item.short}</span>
+            {item.id === "today" && counts.today > 0 && <span className="tab-badge">{counts.today}</span>}
+          </button>
+        ))}
+      </nav>
+      {view !== "completed" && !searching && (
+        <button type="button" className="fab" onClick={() => setSheetOpen(true)} aria-label="Add a task">
+          <Plus size={22} />
+        </button>
+      )}
+
+      <Dialog.Root open={sheetOpen} onOpenChange={setSheetOpen}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="overlay" />
+          <Dialog.Content className="sheet" aria-describedby={undefined}>
+            <span className="sheet-grip" aria-hidden="true" />
+            <Dialog.Title className="sheet-title">New task</Dialog.Title>
+            <Composer
+              today={today}
+              defaultDate={view === "upcoming" ? tomorrow : today}
+              variant="sheet"
+              autoFocus
+              onAdd={(input) => {
+                addTask(input);
+                setSheetOpen(false);
+              }}
+              onDismiss={() => setSheetOpen(false)}
+            />
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
+
+      <PlanMyDay open={planOpen} onOpenChange={setPlanOpen} today={today} onCommit={commitPlan} />
+      <Chatloom
+        open={chatOpen}
+        onClose={() => setChatOpen(false)}
+        tasks={tasks}
+        today={today}
+        now={now}
+        defaultTime={nextQuarterHour()}
+        onAction={(action) => {
+          if (action.type === "focus") return;
+          onChatAction(action);
+        }}
+        onOpenTask={revealTask}
+      />
+      <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} commands={commands} tasks={tasks} today={today} onOpenTask={revealTask} />
+      <FocusMode
+        open={focusOpen}
+        onOpenChange={setFocusOpen}
+        task={focusTask}
+        tasks={tasks}
+        today={today}
+        now={now}
+        onComplete={(task) => actions.toggleDone(task)}
+        onSnooze={(task) => actions.toggleLater(task)}
+        onOpenTask={revealTask}
+      />
+      <ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
+      <Toaster
+        theme={theme}
+        position={isMobile ? "top-center" : "bottom-center"}
+        visibleToasts={3}
+        offset={isMobile ? 12 : 24}
+        toastOptions={{ className: "toast", classNames: { actionButton: "toast-action", description: "toast-desc" } }}
+      />
     </div>
+  );
+}
+
+function EmptyState({ icon, title, body, actions }: { icon: ReactNode; title: string; body: string; actions?: ReactNode }) {
+  return (
+    <div className="empty">
+      <span className="empty-icon" aria-hidden="true">
+        {icon}
+      </span>
+      <p className="empty-title">{title}</p>
+      <p className="empty-body">{body}</p>
+      {actions && <div className="empty-actions">{actions}</div>}
+    </div>
+  );
+}
+
+/** Three threads woven through a check — the Taskloom mark. */
+function BrandMark() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true">
+      <path d="M3 5.5h12M3 9h7M3 12.5h4" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" opacity=".55" />
+      <path d="M9.5 12.2l2.2 2.1L16 9.6" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
   );
 }

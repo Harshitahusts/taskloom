@@ -203,7 +203,9 @@ function vitePluginStorageProxy(): Plugin {
   };
 }
 
-const plugins = [react(), tailwindcss(), jsxLocPlugin(), vitePluginManusRuntime(), vitePluginManusDebugCollector(), vitePluginStorageProxy()];
+// The Manus source locator and host runtime (~360 kB inline script) only serve the Manus dev preview,
+// so keep them out of production builds.
+const plugins = [react(), tailwindcss(), { ...jsxLocPlugin(), apply: "serve" as const }, { ...vitePluginManusRuntime(), apply: "serve" as const }, vitePluginManusDebugCollector(), vitePluginStorageProxy()];
 
 export default defineConfig({
   plugins,
