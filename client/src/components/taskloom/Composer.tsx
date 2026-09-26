@@ -76,11 +76,10 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer({ to
     }
   };
 
-  const expanded = active || !!text || variant === "sheet";
 
   return (
     <form
-      className={`composer composer-${variant}${expanded ? " is-active" : ""}`}
+      className={`composer composer-${variant}${active ? " is-active" : ""}`}
       onSubmit={submit}
       onKeyDown={onKeyDown}
       onFocus={() => {
@@ -112,14 +111,14 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer({ to
           enterKeyHint="done"
           autoComplete="off"
         />
-        {!expanded && (
+        {!active && !text && (
           <kbd className="kbd" aria-hidden="true">
             N
           </kbd>
         )}
       </div>
 
-      <div className="composer-fields" hidden={!expanded}>
+      <div className="composer-fields">
         <label className={`field-chip${!touched.date && parsed?.date ? " is-detected" : ""}`}>
           <CalendarDays size={14} aria-hidden="true" />
           <span className="sr-only">Date</span>
@@ -153,7 +152,7 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer({ to
         </button>
       </div>
 
-      <p id="composer-hint" className={`composer-hint${error ? " is-error" : ""}`} hidden={!expanded} role={error ? "alert" : undefined}>
+      <p id="composer-hint" className={`composer-hint${error ? " is-error" : ""}`} role={error ? "alert" : undefined}>
         {error ? (
           error
         ) : detected ? (

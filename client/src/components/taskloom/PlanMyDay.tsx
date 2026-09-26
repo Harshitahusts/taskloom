@@ -57,7 +57,7 @@ export function PlanMyDay({ open, onOpenChange, today, onCommit }: Props) {
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
         <Dialog.Overlay className="overlay" />
-        <Dialog.Content className="dialog dialog-plan" aria-describedby="plan-desc">
+        <Dialog.Content className="dialog dialog-plan">
           <header className="dialog-head">
             <div>
               <span className="eyebrow">Plan my day</span>
@@ -70,9 +70,9 @@ export function PlanMyDay({ open, onOpenChange, today, onCommit }: Props) {
 
           {!preview ? (
             <div className="plan-step" key="write">
-              <p id="plan-desc" className="dialog-desc">
+              <Dialog.Description className="dialog-desc">
                 One thing per line. Times like <em>8 AM</em> or phrases like <em>after lunch</em> are picked up automatically. You’ll review everything before it’s added.
-              </p>
+              </Dialog.Description>
               <div className="plan-day-toggle segment" role="radiogroup" aria-label="Plan for">
                 {(["today", "tomorrow"] as const).map((option) => (
                   <button key={option} type="button" role="radio" aria-checked={day === option} className="segment-item" onClick={() => setDay(option)}>
@@ -123,9 +123,9 @@ export function PlanMyDay({ open, onOpenChange, today, onCommit }: Props) {
             </div>
           ) : (
             <div className="plan-step" key="preview">
-              <p id="plan-desc" className="dialog-desc">
+              <Dialog.Description className="dialog-desc">
                 Adjust anything that looks off. Times marked <span className="guess-dot" aria-label="estimated" /> were estimated.
-              </p>
+              </Dialog.Description>
               <ol className="plan-preview">
                 {preview.map((item) => (
                   <li key={item.id} className="plan-item">

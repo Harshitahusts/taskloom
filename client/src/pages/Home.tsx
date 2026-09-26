@@ -389,8 +389,13 @@ export default function Home() {
           requestAnimationFrame(() => neighbour?.focus({ preventScroll: true }));
           return;
         }
-        case "e":
         case "enter":
+          // Enter on a button inside the row should press that button, not open the editor.
+          if (document.activeElement !== activeRow) return;
+          event.preventDefault();
+          setEditingId(task.id);
+          return;
+        case "e":
           event.preventDefault();
           setEditingId(task.id);
           return;
@@ -971,9 +976,10 @@ export default function Home() {
       <ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
       <Toaster
         theme={theme}
-        position={isMobile ? "top-center" : "bottom-center"}
+        position="bottom-center"
         visibleToasts={3}
-        offset={isMobile ? 12 : 24}
+        offset={24}
+        mobileOffset={{ bottom: "calc(140px + env(safe-area-inset-bottom))", left: 12, right: 12 }}
         toastOptions={{ className: "toast", classNames: { actionButton: "toast-action", description: "toast-desc" } }}
       />
     </div>

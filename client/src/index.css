@@ -1183,6 +1183,7 @@ a {
 }
 
 .task-body {
+  cursor: pointer;
   display: flex;
   flex-direction: column;
   gap: 2px;

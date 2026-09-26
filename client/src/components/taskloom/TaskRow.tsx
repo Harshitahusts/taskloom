@@ -66,7 +66,7 @@ function TaskRowImpl({ task, today, now, actions, showDate, editing, onEditChang
         </span>
       </button>
 
-      <div className="task-body" onDoubleClick={() => onEditChange(task.id)}>
+      <div className="task-body" onClick={() => onEditChange(task.id)} title="Click to edit">
         <span className="task-title">{task.title}</span>
         {(later || overdue || (task.rolledFrom && !done) || showDate) && (
           <span className="task-meta">
